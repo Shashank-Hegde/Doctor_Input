@@ -9,17 +9,15 @@ from google.oauth2.service_account import Credentials
 
 # ---------------------- CONFIG ----------------------
 
-# Users with roles
-# Change passwords before using!
+# Simple login (you can change username/password)
 VALID_USERS = {
-    "engineer": {"password": "engineer123", "role": "engineer"},
-    "admin": {"password": "admin123", "role": "admin"},
+    "engineer": "engineer123",
 }
 
-# Data entry columns (edit as needed)
+# Data entry columns (edit these as needed)
 COLUMNS = ["col1", "col2", "col3", "col4"]
 
-# Blank rows shown to engineer
+# Blank rows shown for entry
 DEFAULT_ROWS = 10
 
 TIMEZONE = "Asia/Kolkata"
@@ -82,12 +80,10 @@ def get_date_sheets():
                 d = datetime.strptime(date_str, "%Y-%m-%d")
                 date_sheets.append((d, date_str, ws))
             except ValueError:
-                # ignore sheets with wrong format
                 continue
 
-    # Sort by date descending (newest first)
     date_sheets.sort(key=lambda x: x[0], reverse=True)
-    return date_sheets
+    return [(date_str, ws) for (_, date_str, ws) in date_sheets]
 
 
 # ---------------------- LOGIN PAGE ----------------------
@@ -100,27 +96,99 @@ def login_page():
     login_btn = st.button("Login")
 
     if login_btn:
-        user = VALID_USERS.get(username)
-        if user and user["password"] == password:
+        if username in VALID_USERS and VALID_USERS[username] == password:
             st.session_state["logged_in"] = True
-            st.session_state["user_role"] = user["role"]
             st.rerun()
         else:
             st.error("Invalid username or password")
 
 
-# ---------------------- ENTRY PAGE ----------------------
+# ---------------------- HISTORY (LEFT SIDE) ----------------------
+
+def history_section():
+    st.subheader("Previous Entries (Read-only)")
+
+    # CSS: disable text selection + hide toolbar/download
+    st.markdown(
+        """
+        <style>
+        .no-select * {
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        /* Hide toolbar (includes CSV download) on all dataframes/editors */
+        [data-testid="stElementToolbar"] {
+            display: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    date_sheets = get_date_sheets()
+    if not date_sheets:
+        st.write("No previous data yet.")
+        return
+
+    date_labels = [d for (d, _) in date_sheets]
+
+    selected_date = st.radio("Select a date to view:", date_labels, index=0)
+
+    # Find worksheet for selected date
+    selected_ws = None
+    for d, ws in date_sheets:
+        if d == selected_date:
+            selected_ws = ws
+            break
+
+    if not selected_ws:
+        st.write("No data for this date.")
+        return
+
+    rows = selected_ws.get_all_values()
+    if not rows or len(rows) <= 1:
+        st.write("No rows submitted for this date.")
+        return
+
+    header = rows[0]
+    data_rows = rows[1:]
+    df = pd.DataFrame(data_rows, columns=header)
+
+    st.markdown(f"Showing data for **{selected_date}**:")
+    st.markdown('<div class="no-select">', unsafe_allow_html=True)
+    st.dataframe(df, use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ---------------------- DATA ENTRY (RIGHT SIDE) ----------------------
 
 def data_entry_section():
     st.subheader("New Data Entry (Write-Only)")
 
-    st.write("Enter rows below. Once submitted, this page is cleared and you cannot copy previous inputs from here.")
+    st.write(
+        "Enter rows below. After you click **Submit**, the table is cleared. "
+        "Previous entries can only be viewed on the left as read-only."
+    )
 
     if "input_df" not in st.session_state:
         st.session_state["input_df"] = pd.DataFrame(
             [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
             columns=COLUMNS,
         )
+
+    # CSS: hide toolbar/download on editor as well
+    st.markdown(
+        """
+        <style>
+        [data-testid="stElementToolbar"] {
+            display: none !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     edited = st.data_editor(
         st.session_state["input_df"],
@@ -139,7 +207,8 @@ def data_entry_section():
 
     if clear:
         st.session_state["input_df"] = pd.DataFrame(
-            [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)], columns=COLUMNS
+            [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
+            columns=COLUMNS,
         )
         st.rerun()
 
@@ -153,7 +222,7 @@ def data_entry_section():
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
 
-                # Clear after submit so they cannot copy submitted content
+                # Immediately clear the table, then rerun
                 st.session_state["input_df"] = pd.DataFrame(
                     [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
                     columns=COLUMNS,
@@ -163,92 +232,34 @@ def data_entry_section():
             st.error(f"Error: {e}")
 
 
-# ---------------------- VIEW PAGE (ADMIN) ----------------------
-
-def view_history_section():
-    st.subheader("View Submitted Data (Read-only)")
-
-    st.info(
-        "Below is a read-only view of past submissions by date. "
-        "Copying is limited in the browser UI, but cannot be completely prevented."
-    )
-
-    # CSS to reduce text selection / copying
-    st.markdown(
-        """
-        <style>
-        .no-select * {
-            -webkit-user-select: none;
-            -moz-user-select: none;
-            -ms-user-select: none;
-            user-select: none;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    date_sheets = get_date_sheets()
-    if not date_sheets:
-        st.write("No data sheets found yet.")
-        return
-
-    labels = [ds[1] for ds in date_sheets]  # date_str
-    tabs = st.tabs(labels)
-
-    for tab, (_, date_str, ws) in zip(tabs, date_sheets):
-        with tab:
-            st.write(f"Data for **{date_str}**:")
-
-            rows = ws.get_all_values()
-            if not rows:
-                st.write("No data.")
-                continue
-
-            header = rows[0]
-            data_rows = rows[1:]
-
-            if not data_rows:
-                st.write("No data rows.")
-                continue
-
-            df = pd.DataFrame(data_rows, columns=header)
-
-            # Wrap in a div that disables text selection
-            st.markdown('<div class="no-select">', unsafe_allow_html=True)
-            st.dataframe(df, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-
 # ---------------------- MAIN APP ----------------------
 
 def main():
-    st.set_page_config(page_title="Secure Doctor Input", layout="wide")
+    st.set_page_config(page_title="Doctor Input Portal", layout="wide")
 
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False
-        st.session_state["user_role"] = None
 
     if not st.session_state["logged_in"]:
         login_page()
         return
 
-    role = st.session_state.get("user_role", "engineer")
-
-    st.sidebar.write(f"Logged in as: **{role}**")
-    if st.sidebar.button("Logout"):
-        st.session_state.clear()
-        st.rerun()
+    with st.sidebar:
+        st.write("Logged in as: **engineer**")
+        if st.button("Logout"):
+            st.session_state.clear()
+            st.rerun()
 
     st.title("Doctor Input Portal")
 
-    # Data entry is available to everyone
-    data_entry_section()
+    # Two-column layout: left = history, right = entry
+    left_col, right_col = st.columns([1, 2])
 
-    # History view only for admins
-    if role == "admin":
-        st.markdown("---")
-        view_history_section()
+    with left_col:
+        history_section()
+
+    with right_col:
+        data_entry_section()
 
 
 if __name__ == "__main__":
