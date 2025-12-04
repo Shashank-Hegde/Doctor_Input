@@ -9,12 +9,15 @@ from google.oauth2.service_account import Credentials
 
 # ---------------------- CONFIG ----------------------
 
+# Logins:
+# - doctor/password123 => New Entry only
+# - admin/admin123     => New Entry + Previous Entries
 VALID_USERS = {
     "doctor": {"password": "password123", "role": "doctor"},
     "admin": {"password": "admin123", "role": "admin"},
 }
 
-# TODO: put your real columns here
+# Change these to your real column names
 COLUMNS = ["col1", "col2", "col3", "col4"]
 
 DEFAULT_ROWS = 10
@@ -38,29 +41,37 @@ def get_spreadsheet():
 
 
 def get_today_sheet():
+    """Get or create today's worksheet named data_YYYY-MM-DD."""
     sh = get_spreadsheet()
     now = datetime.now(ZoneInfo(TIMEZONE))
     sheet_name = f"data_{now.strftime('%Y-%m-%d')}"
+
     try:
         ws = sh.worksheet(sheet_name)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=sheet_name, rows="2000", cols=str(len(COLUMNS)))
         ws.append_row(COLUMNS)
+
     return ws
 
 
 def append_rows(ws, df: pd.DataFrame) -> int:
+    """Append non-empty rows from df to worksheet."""
     df_clean = df.dropna(how="all")
     if df_clean.empty:
         return 0
-    for row in df_clean.values.tolist():
-        ws.append_row(row, value_input_option="USER_ENTERED")
+
+    rows = df_clean.values.tolist()
+    for r in rows:
+        ws.append_row(r, value_input_option="USER_ENTERED")
     return len(df_clean)
 
 
 def get_date_sheets():
+    """Return list of (date_str, worksheet) sorted by date descending."""
     sh = get_spreadsheet()
     worksheets = sh.worksheets()
+
     date_sheets = []
     for ws in worksheets:
         if ws.title.startswith("data_"):
@@ -70,6 +81,7 @@ def get_date_sheets():
                 date_sheets.append((d, date_str, ws))
             except ValueError:
                 continue
+
     date_sheets.sort(key=lambda x: x[0], reverse=True)
     return [(date_str, ws) for (_, date_str, ws) in date_sheets]
 
@@ -78,6 +90,7 @@ def get_date_sheets():
 
 def login_page():
     st.title("Secure Login")
+
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
     if st.button("Login"):
@@ -95,7 +108,7 @@ def login_page():
 def history_tab():
     st.subheader("Previous Entries (Read-only)")
 
-    # Make table as hard as we can to copy from (still not bullet-proof)
+    # Make table hard to copy from (not bullet-proof)
     st.markdown(
         """
         <style>
@@ -137,7 +150,6 @@ def history_tab():
     df = pd.DataFrame(data_rows, columns=header)
 
     st.markdown(f"Showing data for **{selected}**:")
-
     html_table = df.to_html(index=False, escape=True)
     st.markdown(f'<div class="no-select-table">{html_table}</div>', unsafe_allow_html=True)
     st.caption("This view is read-only; text selection is disabled in the UI.")
@@ -160,7 +172,7 @@ def new_entry_tab():
         "Previous entries are only visible to admin."
     )
 
-    # Hide toolbar (CSV/download) on the editor
+    # Hide widget toolbar (CSV/download)
     st.markdown(
         """
         <style>
@@ -172,22 +184,23 @@ def new_entry_tab():
         unsafe_allow_html=True,
     )
 
-    # Backing data stored separately from widget key
-    if "editor_data" not in st.session_state:
-        st.session_state["editor_data"] = blank_df()
+    # Use a dynamic key to reset the editor on demand
+    if "editor_key" not in st.session_state:
+        st.session_state["editor_key"] = "editor_1"
 
-    df = st.session_state["editor_data"]
+    editor_key = st.session_state["editor_key"]
+
+    # Always start with blank df for a new key; for an existing key,
+    # Streamlit will keep the internal value as the user edits.
+    df_default = blank_df()
 
     edited = st.data_editor(
-        df,
+        df_default,
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
-        key="editor_widget",  # widget key
+        key=editor_key,
     )
-
-    # Update backing data with latest edits
-    st.session_state["editor_data"] = edited
 
     col1, col2 = st.columns(2)
     with col1:
@@ -196,20 +209,20 @@ def new_entry_tab():
         clear = st.button("Clear Table")
 
     if clear:
-        st.session_state["editor_data"] = blank_df()
+        # Change the key so the widget is recreated with a fresh blank table
+        st.session_state["editor_key"] = f"editor_reset_{datetime.now().timestamp()}"
         st.rerun()
 
     if submit:
         try:
             ws = get_today_sheet()
-            df_to_save = st.session_state["editor_data"]
-            saved_rows = append_rows(ws, df_to_save)
+            saved_rows = append_rows(ws, edited)
             if saved_rows == 0:
                 st.warning("No non-empty rows to save.")
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
-                # Reset editor after successful save
-                st.session_state["editor_data"] = blank_df()
+                # Change key to reset editor to blank
+                st.session_state["editor_key"] = f"editor_reset_{datetime.now().timestamp()}"
                 st.rerun()
         except Exception as e:
             st.error(f"Error: {e}")
