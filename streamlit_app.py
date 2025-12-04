@@ -9,25 +9,24 @@ from google.oauth2.service_account import Credentials
 
 # ---------------------- CONFIG ----------------------
 
-# Simple login (you can change username/password)
+# Simple login (adjust as needed)
 VALID_USERS = {
     "engineer": "engineer123",
 }
 
-# Data entry columns (edit these as needed)
+# Data entry columns
 COLUMNS = ["col1", "col2", "col3", "col4"]
 
-# Blank rows shown for entry
+# Number of blank rows to show
 DEFAULT_ROWS = 10
 
 TIMEZONE = "Asia/Kolkata"
 
 
-# ---------------------- HELPERS ----------------------
+# ---------------------- GOOGLE SHEETS HELPERS ----------------------
 
 @st.cache_resource
 def get_gspread_client():
-    """Create a cached gspread client."""
     service_info = dict(st.secrets["gcp_service_account"])
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
     creds = Credentials.from_service_account_info(service_info, scopes=scopes)
@@ -55,7 +54,7 @@ def get_today_sheet():
     return ws
 
 
-def append_rows(ws, df):
+def append_rows(ws, df: pd.DataFrame) -> int:
     """Append non-empty rows from df to worksheet."""
     df_clean = df.dropna(how="all")
     if df_clean.empty:
@@ -83,6 +82,7 @@ def get_date_sheets():
                 continue
 
     date_sheets.sort(key=lambda x: x[0], reverse=True)
+    # Return just (date_str, ws)
     return [(date_str, ws) for (_, date_str, ws) in date_sheets]
 
 
@@ -103,24 +103,30 @@ def login_page():
             st.error("Invalid username or password")
 
 
-# ---------------------- HISTORY (LEFT SIDE) ----------------------
+# ---------------------- PREVIOUS ENTRIES TAB ----------------------
 
-def history_section():
+def history_tab():
     st.subheader("Previous Entries (Read-only)")
 
-    # CSS: disable text selection + hide toolbar/download
+    # Global CSS:
+    #  - hide the little toolbar (download, etc.)
+    #  - prevent selection & pointer events on the history table
     st.markdown(
         """
         <style>
-        .no-select * {
+        /* Hide toolbar on all tables/editors */
+        [data-testid="stElementToolbar"] {
+            display: none !important;
+        }
+        /* Make the history table non-interactive and non-selectable */
+        .no-select-table * {
             -webkit-user-select: none;
             -moz-user-select: none;
             -ms-user-select: none;
             user-select: none;
         }
-        /* Hide toolbar (includes CSV download) on all dataframes/editors */
-        [data-testid="stElementToolbar"] {
-            display: none !important;
+        .no-select-table [data-testid="stDataFrame"] {
+            pointer-events: none;
         }
         </style>
         """,
@@ -132,22 +138,25 @@ def history_section():
         st.write("No previous data yet.")
         return
 
-    date_labels = [d for (d, _) in date_sheets]
+    date_options = ["None"] + [d for (d, _) in date_sheets]
+    selected = st.selectbox("Select a date to view:", date_options, index=0)
 
-    selected_date = st.radio("Select a date to view:", date_labels, index=0)
+    if selected == "None":
+        st.info("Select a date above to view previous submissions.")
+        return
 
-    # Find worksheet for selected date
-    selected_ws = None
-    for d, ws in date_sheets:
-        if d == selected_date:
-            selected_ws = ws
+    # Find the worksheet for the selected date
+    ws = None
+    for d, w in date_sheets:
+        if d == selected:
+            ws = w
             break
 
-    if not selected_ws:
+    if ws is None:
         st.write("No data for this date.")
         return
 
-    rows = selected_ws.get_all_values()
+    rows = ws.get_all_values()
     if not rows or len(rows) <= 1:
         st.write("No rows submitted for this date.")
         return
@@ -156,29 +165,23 @@ def history_section():
     data_rows = rows[1:]
     df = pd.DataFrame(data_rows, columns=header)
 
-    st.markdown(f"Showing data for **{selected_date}**:")
-    st.markdown('<div class="no-select">', unsafe_allow_html=True)
+    st.markdown(f"Showing data for **{selected}**:")
+    st.markdown('<div class="no-select-table">', unsafe_allow_html=True)
     st.dataframe(df, use_container_width=True)
     st.markdown('</div>', unsafe_allow_html=True)
 
 
-# ---------------------- DATA ENTRY (RIGHT SIDE) ----------------------
+# ---------------------- NEW ENTRY TAB ----------------------
 
-def data_entry_section():
+def new_entry_tab():
     st.subheader("New Data Entry (Write-Only)")
 
     st.write(
         "Enter rows below. After you click **Submit**, the table is cleared. "
-        "Previous entries can only be viewed on the left as read-only."
+        "Previous entries can be viewed only in the **Previous Entries** tab."
     )
 
-    if "input_df" not in st.session_state:
-        st.session_state["input_df"] = pd.DataFrame(
-            [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
-            columns=COLUMNS,
-        )
-
-    # CSS: hide toolbar/download on editor as well
+    # Hide toolbar for the editor too
     st.markdown(
         """
         <style>
@@ -190,11 +193,18 @@ def data_entry_section():
         unsafe_allow_html=True,
     )
 
+    if "input_df" not in st.session_state:
+        st.session_state["input_df"] = pd.DataFrame(
+            [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
+            columns=COLUMNS,
+        )
+
     edited = st.data_editor(
         st.session_state["input_df"],
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
+        key="data_editor",
     )
 
     col1, col2 = st.columns(2)
@@ -206,6 +216,7 @@ def data_entry_section():
         clear = st.button("Clear Table")
 
     if clear:
+        # Reset and rerun
         st.session_state["input_df"] = pd.DataFrame(
             [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
             columns=COLUMNS,
@@ -221,12 +232,9 @@ def data_entry_section():
                 st.warning("No non-empty rows to save.")
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
-
-                # Immediately clear the table, then rerun
-                st.session_state["input_df"] = pd.DataFrame(
-                    [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
-                    columns=COLUMNS,
-                )
+                # Hard reset: remove input_df and rerun
+                if "input_df" in st.session_state:
+                    del st.session_state["input_df"]
                 st.rerun()
         except Exception as e:
             st.error(f"Error: {e}")
@@ -252,14 +260,13 @@ def main():
 
     st.title("Doctor Input Portal")
 
-    # Two-column layout: left = history, right = entry
-    left_col, right_col = st.columns([1, 2])
+    tab1, tab2 = st.tabs(["New Entry", "Previous Entries"])
 
-    with left_col:
-        history_section()
+    with tab1:
+        new_entry_tab()
 
-    with right_col:
-        data_entry_section()
+    with tab2:
+        history_tab()
 
 
 if __name__ == "__main__":
