@@ -14,7 +14,9 @@ VALID_USERS = {
     "admin": {"password": "admin123", "role": "admin"},
 }
 
+# TODO: put your real columns here
 COLUMNS = ["col1", "col2", "col3", "col4"]
+
 DEFAULT_ROWS = 10
 TIMEZONE = "Asia/Kolkata"
 
@@ -88,11 +90,12 @@ def login_page():
             st.error("Invalid username or password")
 
 
-# ---------------------- HISTORY (ADMIN ONLY) ----------------------
+# ---------------------- PREVIOUS ENTRIES (ADMIN ONLY) ----------------------
 
 def history_tab():
     st.subheader("Previous Entries (Read-only)")
 
+    # Make table as hard as possible to copy from (still not bullet-proof)
     st.markdown(
         """
         <style>
@@ -134,15 +137,19 @@ def history_tab():
     df = pd.DataFrame(data_rows, columns=header)
 
     st.markdown(f"Showing data for **{selected}**:")
+
     html_table = df.to_html(index=False, escape=True)
     st.markdown(f'<div class="no-select-table">{html_table}</div>', unsafe_allow_html=True)
-    st.caption("Note: This view is read-only and text selection is disabled in the UI.")
+    st.caption("This view is read-only; text selection is disabled in the UI.")
 
 
 # ---------------------- NEW ENTRY TAB ----------------------
 
 def blank_df():
-    return pd.DataFrame([["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)], columns=COLUMNS)
+    return pd.DataFrame(
+        [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
+        columns=COLUMNS,
+    )
 
 
 def new_entry_tab():
@@ -150,10 +157,10 @@ def new_entry_tab():
 
     st.write(
         "Enter rows below. After you click **Submit**, the table is cleared. "
-        "Previous entries are not visible to doctors and are only viewable by admin."
+        "Previous entries are only visible to admin."
     )
 
-    # hide widget toolbar (CSV/download)
+    # Hide toolbar (CSV/download) on the editor
     st.markdown(
         """
         <style>
@@ -165,20 +172,18 @@ def new_entry_tab():
         unsafe_allow_html=True,
     )
 
-    # single source of truth for editor content
-    if "editor_df" not in st.session_state:
-        st.session_state["editor_df"] = blank_df()
+    # Let the editor manage its own state via its key.
+    if "editor_widget" not in st.session_state:
+        st.session_state["editor_widget"] = blank_df()
 
     edited = st.data_editor(
-        st.session_state["editor_df"],
+        st.session_state["editor_widget"],
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
-        key="editor_widget",
+        key="editor_widget",  # widget state lives here
     )
-
-    # keep latest edits in state (so if submit fails we still have them)
-    st.session_state["editor_df"] = edited
+    # No manual assignment back; Streamlit already stores it in session_state["editor_widget"]
 
     col1, col2 = st.columns(2)
     with col1:
@@ -187,19 +192,20 @@ def new_entry_tab():
         clear = st.button("Clear Table")
 
     if clear:
-        st.session_state["editor_df"] = blank_df()
+        st.session_state["editor_widget"] = blank_df()
         st.rerun()
 
     if submit:
         try:
             ws = get_today_sheet()
-            saved_rows = append_rows(ws, st.session_state["editor_df"])
+            df_to_save = st.session_state["editor_widget"]
+            saved_rows = append_rows(ws, df_to_save)
             if saved_rows == 0:
                 st.warning("No non-empty rows to save.")
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
-                # reset editor and rerun → empty table
-                st.session_state["editor_df"] = blank_df()
+                # Reset editor after successful save
+                st.session_state["editor_widget"] = blank_df()
                 st.rerun()
         except Exception as e:
             st.error(f"Error: {e}")
