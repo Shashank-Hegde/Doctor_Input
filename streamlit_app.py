@@ -14,7 +14,7 @@ from google.oauth2.service_account import Credentials
 # - admin/admin123     => New Entry + Previous Entries
 VALID_USERS = {
     "doctor": {"password": "password123", "role": "doctor"},
-    "admin": {"password": "admin123", "role": "admin"},
+    "admin": {"password": "doctor", "role": "admin"},
 }
 
 # Change these to your real column names
