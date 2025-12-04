@@ -9,15 +9,18 @@ from google.oauth2.service_account import Credentials
 
 # ---------------------- CONFIG ----------------------
 
-# Simple login (adjust as needed)
+# Users and roles
+# doctor = data entry only
+# admin  = data entry + view previous entries
 VALID_USERS = {
-    "engineer": "engineer123",
+    "doctor": {"password": "password123", "role": "doctor"},
+    "admin": {"password": "admin123", "role": "admin"},
 }
 
-# Data entry columns
+# Data entry columns – CHANGE these to your real fields
 COLUMNS = ["col1", "col2", "col3", "col4"]
 
-# Number of blank rows to show
+# Number of blank rows to show in the editor
 DEFAULT_ROWS = 10
 
 TIMEZONE = "Asia/Kolkata"
@@ -82,7 +85,6 @@ def get_date_sheets():
                 continue
 
     date_sheets.sort(key=lambda x: x[0], reverse=True)
-    # Return just (date_str, ws)
     return [(date_str, ws) for (_, date_str, ws) in date_sheets]
 
 
@@ -96,37 +98,29 @@ def login_page():
     login_btn = st.button("Login")
 
     if login_btn:
-        if username in VALID_USERS and VALID_USERS[username] == password:
+        user = VALID_USERS.get(username)
+        if user and user["password"] == password:
             st.session_state["logged_in"] = True
+            st.session_state["user_role"] = user["role"]
             st.rerun()
         else:
             st.error("Invalid username or password")
 
 
-# ---------------------- PREVIOUS ENTRIES TAB ----------------------
+# ---------------------- PREVIOUS ENTRIES (ADMIN ONLY) ----------------------
 
 def history_tab():
     st.subheader("Previous Entries (Read-only)")
 
-    # Global CSS:
-    #  - hide the little toolbar (download, etc.)
-    #  - prevent selection & pointer events on the history table
+    # CSS: make table non-selectable (harder to copy)
     st.markdown(
         """
         <style>
-        /* Hide toolbar on all tables/editors */
-        [data-testid="stElementToolbar"] {
-            display: none !important;
-        }
-        /* Make the history table non-interactive and non-selectable */
-        .no-select-table * {
-            -webkit-user-select: none;
-            -moz-user-select: none;
-            -ms-user-select: none;
-            user-select: none;
-        }
-        .no-select-table [data-testid="stDataFrame"] {
-            pointer-events: none;
+        .no-select-table, .no-select-table * {
+            -webkit-user-select: none !important;
+            -moz-user-select: none !important;
+            -ms-user-select: none !important;
+            user-select: none !important;
         }
         </style>
         """,
@@ -166,9 +160,15 @@ def history_tab():
     df = pd.DataFrame(data_rows, columns=header)
 
     st.markdown(f"Showing data for **{selected}**:")
-    st.markdown('<div class="no-select-table">', unsafe_allow_html=True)
-    st.dataframe(df, use_container_width=True)
-    st.markdown('</div>', unsafe_allow_html=True)
+
+    # Render as plain HTML table inside a non-selectable div
+    html_table = df.to_html(index=False, escape=True)
+    st.markdown(
+        f'<div class="no-select-table">{html_table}</div>',
+        unsafe_allow_html=True,
+    )
+
+    st.caption("Note: This view is read-only and text selection is disabled in the UI.")
 
 
 # ---------------------- NEW ENTRY TAB ----------------------
@@ -178,10 +178,10 @@ def new_entry_tab():
 
     st.write(
         "Enter rows below. After you click **Submit**, the table is cleared. "
-        "Previous entries can be viewed only in the **Previous Entries** tab."
+        "Previous entries are not visible to doctors and are only viewable by admin."
     )
 
-    # Hide toolbar for the editor too
+    # Hide toolbar on the editor (removes CSV/download)
     st.markdown(
         """
         <style>
@@ -232,7 +232,7 @@ def new_entry_tab():
                 st.warning("No non-empty rows to save.")
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
-                # Hard reset: remove input_df and rerun
+                # Hard reset: delete and rerun -> table fully cleared
                 if "input_df" in st.session_state:
                     del st.session_state["input_df"]
                 st.rerun()
@@ -247,26 +247,33 @@ def main():
 
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False
+        st.session_state["user_role"] = None
 
     if not st.session_state["logged_in"]:
         login_page()
         return
 
+    role = st.session_state.get("user_role", "doctor")
+
     with st.sidebar:
-        st.write("Logged in as: **engineer**")
+        st.write(f"Logged in as: **{role}**")
         if st.button("Logout"):
             st.session_state.clear()
             st.rerun()
 
     st.title("Doctor Input Portal")
 
-    tab1, tab2 = st.tabs(["New Entry", "Previous Entries"])
-
-    with tab1:
-        new_entry_tab()
-
-    with tab2:
-        history_tab()
+    if role == "admin":
+        tab1, tab2 = st.tabs(["New Entry", "Previous Entries"])
+        with tab1:
+            new_entry_tab()
+        with tab2:
+            history_tab()
+    else:
+        # doctor: only New Entry tab
+        (tab1,) = st.tabs(["New Entry"])
+        with tab1:
+            new_entry_tab()
 
 
 if __name__ == "__main__":
