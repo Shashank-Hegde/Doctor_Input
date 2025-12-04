@@ -106,7 +106,7 @@ def login_page():
 # ---------------------- PREVIOUS ENTRIES (ADMIN ONLY) ----------------------
 
 def history_tab():
-    st.subheader("Previous Entries (Read-only)")
+    st.subheader("Previous Entries")
 
     # Make table hard to copy from (not bullet-proof)
     st.markdown(
@@ -165,11 +165,10 @@ def blank_df():
 
 
 def new_entry_tab():
-    st.subheader("New Data Entry (Write-Only)")
+    st.subheader("New Data Entry")
 
     st.write(
         "Enter rows below. After you click **Submit**, the table is cleared. "
-        "Previous entries are only visible to admin."
     )
 
     # Hide widget toolbar (CSV/download)
