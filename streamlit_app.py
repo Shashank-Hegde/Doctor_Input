@@ -75,9 +75,10 @@ def login_page():
     if login_btn:
         if username in VALID_USERS and VALID_USERS[username] == password:
             st.session_state["logged_in"] = True
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("Invalid username or password")
+
 
 
 # ---------------------- MAIN APP ----------------------
@@ -112,7 +113,7 @@ def entry_page():
         st.session_state["input_df"] = pd.DataFrame(
             [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)], columns=COLUMNS
         )
-        st.experimental_rerun()
+        st.rerun()
 
     if submit:
         try:
@@ -128,7 +129,7 @@ def entry_page():
                     [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
                     columns=COLUMNS,
                 )
-                st.experimental_rerun()
+                st.rerun()
         except Exception as e:
             st.error(f"Error: {e}")
 
