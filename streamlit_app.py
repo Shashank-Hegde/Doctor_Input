@@ -95,7 +95,7 @@ def login_page():
 def history_tab():
     st.subheader("Previous Entries (Read-only)")
 
-    # Make table as hard as possible to copy from (still not bullet-proof)
+    # Make table as hard as we can to copy from (still not bullet-proof)
     st.markdown(
         """
         <style>
@@ -172,18 +172,22 @@ def new_entry_tab():
         unsafe_allow_html=True,
     )
 
-    # Let the editor manage its own state via its key.
-    if "editor_widget" not in st.session_state:
-        st.session_state["editor_widget"] = blank_df()
+    # Backing data stored separately from widget key
+    if "editor_data" not in st.session_state:
+        st.session_state["editor_data"] = blank_df()
+
+    df = st.session_state["editor_data"]
 
     edited = st.data_editor(
-        st.session_state["editor_widget"],
+        df,
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
-        key="editor_widget",  # widget state lives here
+        key="editor_widget",  # widget key
     )
-    # No manual assignment back; Streamlit already stores it in session_state["editor_widget"]
+
+    # Update backing data with latest edits
+    st.session_state["editor_data"] = edited
 
     col1, col2 = st.columns(2)
     with col1:
@@ -192,20 +196,20 @@ def new_entry_tab():
         clear = st.button("Clear Table")
 
     if clear:
-        st.session_state["editor_widget"] = blank_df()
+        st.session_state["editor_data"] = blank_df()
         st.rerun()
 
     if submit:
         try:
             ws = get_today_sheet()
-            df_to_save = st.session_state["editor_widget"]
+            df_to_save = st.session_state["editor_data"]
             saved_rows = append_rows(ws, df_to_save)
             if saved_rows == 0:
                 st.warning("No non-empty rows to save.")
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
                 # Reset editor after successful save
-                st.session_state["editor_widget"] = blank_df()
+                st.session_state["editor_data"] = blank_df()
                 st.rerun()
         except Exception as e:
             st.error(f"Error: {e}")
