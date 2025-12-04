@@ -9,20 +9,13 @@ from google.oauth2.service_account import Credentials
 
 # ---------------------- CONFIG ----------------------
 
-# Users and roles
-# doctor = data entry only
-# admin  = data entry + view previous entries
 VALID_USERS = {
     "doctor": {"password": "password123", "role": "doctor"},
     "admin": {"password": "admin123", "role": "admin"},
 }
 
-# Data entry columns – CHANGE these to your real fields
 COLUMNS = ["col1", "col2", "col3", "col4"]
-
-# Number of blank rows to show in the editor
 DEFAULT_ROWS = 10
-
 TIMEZONE = "Asia/Kolkata"
 
 
@@ -43,37 +36,29 @@ def get_spreadsheet():
 
 
 def get_today_sheet():
-    """Get or create today's worksheet named data_YYYY-MM-DD."""
     sh = get_spreadsheet()
     now = datetime.now(ZoneInfo(TIMEZONE))
     sheet_name = f"data_{now.strftime('%Y-%m-%d')}"
-
     try:
         ws = sh.worksheet(sheet_name)
     except gspread.WorksheetNotFound:
         ws = sh.add_worksheet(title=sheet_name, rows="2000", cols=str(len(COLUMNS)))
         ws.append_row(COLUMNS)
-
     return ws
 
 
 def append_rows(ws, df: pd.DataFrame) -> int:
-    """Append non-empty rows from df to worksheet."""
     df_clean = df.dropna(how="all")
     if df_clean.empty:
         return 0
-
-    rows = df_clean.values.tolist()
-    for r in rows:
-        ws.append_row(r, value_input_option="USER_ENTERED")
-    return len(rows)
+    for row in df_clean.values.tolist():
+        ws.append_row(row, value_input_option="USER_ENTERED")
+    return len(df_clean)
 
 
 def get_date_sheets():
-    """Return list of (date_str, worksheet) sorted by date descending."""
     sh = get_spreadsheet()
     worksheets = sh.worksheets()
-
     date_sheets = []
     for ws in worksheets:
         if ws.title.startswith("data_"):
@@ -83,21 +68,17 @@ def get_date_sheets():
                 date_sheets.append((d, date_str, ws))
             except ValueError:
                 continue
-
     date_sheets.sort(key=lambda x: x[0], reverse=True)
     return [(date_str, ws) for (_, date_str, ws) in date_sheets]
 
 
-# ---------------------- LOGIN PAGE ----------------------
+# ---------------------- LOGIN ----------------------
 
 def login_page():
     st.title("Secure Login")
-
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
-    login_btn = st.button("Login")
-
-    if login_btn:
+    if st.button("Login"):
         user = VALID_USERS.get(username)
         if user and user["password"] == password:
             st.session_state["logged_in"] = True
@@ -107,12 +88,11 @@ def login_page():
             st.error("Invalid username or password")
 
 
-# ---------------------- PREVIOUS ENTRIES (ADMIN ONLY) ----------------------
+# ---------------------- HISTORY (ADMIN ONLY) ----------------------
 
 def history_tab():
     st.subheader("Previous Entries (Read-only)")
 
-    # CSS: make table non-selectable (harder to copy)
     st.markdown(
         """
         <style>
@@ -139,13 +119,7 @@ def history_tab():
         st.info("Select a date above to view previous submissions.")
         return
 
-    # Find the worksheet for the selected date
-    ws = None
-    for d, w in date_sheets:
-        if d == selected:
-            ws = w
-            break
-
+    ws = next((w for d, w in date_sheets if d == selected), None)
     if ws is None:
         st.write("No data for this date.")
         return
@@ -160,18 +134,16 @@ def history_tab():
     df = pd.DataFrame(data_rows, columns=header)
 
     st.markdown(f"Showing data for **{selected}**:")
-
-    # Render as plain HTML table inside a non-selectable div
     html_table = df.to_html(index=False, escape=True)
-    st.markdown(
-        f'<div class="no-select-table">{html_table}</div>',
-        unsafe_allow_html=True,
-    )
-
+    st.markdown(f'<div class="no-select-table">{html_table}</div>', unsafe_allow_html=True)
     st.caption("Note: This view is read-only and text selection is disabled in the UI.")
 
 
 # ---------------------- NEW ENTRY TAB ----------------------
+
+def blank_df():
+    return pd.DataFrame([["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)], columns=COLUMNS)
+
 
 def new_entry_tab():
     st.subheader("New Data Entry (Write-Only)")
@@ -181,7 +153,7 @@ def new_entry_tab():
         "Previous entries are not visible to doctors and are only viewable by admin."
     )
 
-    # Hide toolbar on the editor (removes CSV/download)
+    # hide widget toolbar (CSV/download)
     st.markdown(
         """
         <style>
@@ -193,54 +165,47 @@ def new_entry_tab():
         unsafe_allow_html=True,
     )
 
-    if "input_df" not in st.session_state:
-        st.session_state["input_df"] = pd.DataFrame(
-            [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
-            columns=COLUMNS,
-        )
+    # single source of truth for editor content
+    if "editor_df" not in st.session_state:
+        st.session_state["editor_df"] = blank_df()
 
     edited = st.data_editor(
-        st.session_state["input_df"],
+        st.session_state["editor_df"],
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
-        key="data_editor",
+        key="editor_widget",
     )
 
-    col1, col2 = st.columns(2)
+    # keep latest edits in state (so if submit fails we still have them)
+    st.session_state["editor_df"] = edited
 
+    col1, col2 = st.columns(2)
     with col1:
         submit = st.button("Submit to Google Sheet", type="primary")
-
     with col2:
         clear = st.button("Clear Table")
 
     if clear:
-        # Reset and rerun
-        st.session_state["input_df"] = pd.DataFrame(
-            [["" for _ in COLUMNS] for _ in range(DEFAULT_ROWS)],
-            columns=COLUMNS,
-        )
+        st.session_state["editor_df"] = blank_df()
         st.rerun()
 
     if submit:
         try:
             ws = get_today_sheet()
-            saved_rows = append_rows(ws, edited)
-
+            saved_rows = append_rows(ws, st.session_state["editor_df"])
             if saved_rows == 0:
                 st.warning("No non-empty rows to save.")
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
-                # Hard reset: delete and rerun -> table fully cleared
-                if "input_df" in st.session_state:
-                    del st.session_state["input_df"]
+                # reset editor and rerun → empty table
+                st.session_state["editor_df"] = blank_df()
                 st.rerun()
         except Exception as e:
             st.error(f"Error: {e}")
 
 
-# ---------------------- MAIN APP ----------------------
+# ---------------------- MAIN ----------------------
 
 def main():
     st.set_page_config(page_title="Doctor Input Portal", layout="wide")
@@ -270,7 +235,6 @@ def main():
         with tab2:
             history_tab()
     else:
-        # doctor: only New Entry tab
         (tab1,) = st.tabs(["New Entry"])
         with tab1:
             new_entry_tab()
