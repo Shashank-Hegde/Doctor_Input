@@ -1,10 +1,14 @@
 import streamlit as st
 import pandas as pd
+from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
+
+BASE_DIR = Path(__file__).parent
+EXCEL_FILE = BASE_DIR / "Specialty Mapping.xlsx"
 
 
 # ---------------------- CONFIG ----------------------
@@ -93,24 +97,24 @@ def get_date_sheets():
 
 @st.cache_data
 def load_reference_sheet():  # <<< added
-    """Load the attached Excel sheet once and cache it."""  # <<< added
     try:
         df = pd.read_excel(EXCEL_FILE)
+        if df is None or df.empty:
+            return None
         return df
     except Exception as e:
-        # We'll handle errors in the UI; returning None makes it optional.  # <<< added
+        # Show the real reason instead of a generic message
+        st.error(f"Failed to load Excel file '{EXCEL_FILE.name}': {e}")
         return None
-
 
 def show_reference_sheet():  # <<< added
     """Show the Excel data on the homepage."""  # <<< added
     st.subheader("Reference – Specialty Mapping")  # title on homepage  # <<< added
     df = load_reference_sheet()
-    if df is None or df.empty:
-        st.info("Reference sheet not available or empty.")  # <<< added
+    if df is None:
+        st.info("Reference sheet not available or could not be loaded.")
         return
-    # Read-only table for doctors/admins                      # <<< added
-    st.dataframe(df, use_container_width=True)               # <<< added
+    st.dataframe(df, use_container_width=True)
 
 
 # ---------------------- LOGIN ----------------------
