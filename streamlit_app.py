@@ -11,7 +11,7 @@ from google.oauth2.service_account import Credentials
 
 # Logins:
 # - doctor/password123 => New Entry only
-# - admin/admin123     => New Entry + Previous Entries
+# - admin/doctor       => New Entry + Previous Entries
 VALID_USERS = {
     "doctor": {"password": "password123", "role": "doctor"},
     "admin": {"password": "doctor", "role": "admin"},
@@ -22,6 +22,9 @@ COLUMNS = ["col1", "col2", "col3", "col4"]
 
 DEFAULT_ROWS = 10
 TIMEZONE = "Asia/Kolkata"
+
+# Path to the attached Excel file (place it next to this script)  # <<< added
+EXCEL_FILE = "Specialty Mapping.xlsx"                             # <<< added
 
 
 # ---------------------- GOOGLE SHEETS HELPERS ----------------------
@@ -84,6 +87,30 @@ def get_date_sheets():
 
     date_sheets.sort(key=lambda x: x[0], reverse=True)
     return [(date_str, ws) for (_, date_str, ws) in date_sheets]
+
+
+# ---------------------- REFERENCE SHEET (EXCEL ON HOMEPAGE) ----------------------  # <<< added
+
+@st.cache_data
+def load_reference_sheet():  # <<< added
+    """Load the attached Excel sheet once and cache it."""  # <<< added
+    try:
+        df = pd.read_excel(EXCEL_FILE)
+        return df
+    except Exception as e:
+        # We'll handle errors in the UI; returning None makes it optional.  # <<< added
+        return None
+
+
+def show_reference_sheet():  # <<< added
+    """Show the Excel data on the homepage."""  # <<< added
+    st.subheader("Reference – Specialty Mapping")  # title on homepage  # <<< added
+    df = load_reference_sheet()
+    if df is None or df.empty:
+        st.info("Reference sheet not available or empty.")  # <<< added
+        return
+    # Read-only table for doctors/admins                      # <<< added
+    st.dataframe(df, use_container_width=True)               # <<< added
 
 
 # ---------------------- LOGIN ----------------------
@@ -189,8 +216,6 @@ def new_entry_tab():
 
     editor_key = st.session_state["editor_key"]
 
-    # Always start with blank df for a new key; for an existing key,
-    # Streamlit will keep the internal value as the user edits.
     df_default = blank_df()
 
     edited = st.data_editor(
@@ -208,7 +233,6 @@ def new_entry_tab():
         clear = st.button("Clear Table")
 
     if clear:
-        # Change the key so the widget is recreated with a fresh blank table
         st.session_state["editor_key"] = f"editor_reset_{datetime.now().timestamp()}"
         st.rerun()
 
@@ -220,7 +244,6 @@ def new_entry_tab():
                 st.warning("No non-empty rows to save.")
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
-                # Change key to reset editor to blank
                 st.session_state["editor_key"] = f"editor_reset_{datetime.now().timestamp()}"
                 st.rerun()
         except Exception as e:
@@ -249,6 +272,10 @@ def main():
             st.rerun()
 
     st.title("Doctor Input Portal")
+
+    # ---- NEW: show Excel sheet on homepage for all logged-in users ----  # <<< added
+    show_reference_sheet()                                                 # <<< added
+    st.markdown("---")                                                     # <<< added
 
     if role == "admin":
         tab1, tab2 = st.tabs(["New Entry", "Previous Entries"])
