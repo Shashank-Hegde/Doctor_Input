@@ -25,7 +25,6 @@ TIMEZONE = "Asia/Kolkata"
 # Excel file with the specialty mapping reference (must be in repo root)
 EXCEL_FILE = "Specialty Mapping.xlsx"
 
-# Set page config once at top-level
 st.set_page_config(page_title="Doctor Input Portal", layout="wide")
 
 
@@ -92,21 +91,36 @@ def get_date_sheets():
     return [(date_str, ws) for (_, date_str, ws) in date_sheets]
 
 
-def get_mapping_sheet_for_today():
+def create_new_token_mapping_sheet():
     """
-    Get or create today's worksheet for specialty mapping:
-    mapping_YYYY-MM-DD
-    All submissions on the same day go into this sheet.
+    For each submit, create a NEW worksheet named:
+        token_{counter}_{YYYY-MM-DD}
+    where counter increments for that date.
     """
     sh = get_spreadsheet()
     now = datetime.now(ZoneInfo(TIMEZONE))
-    sheet_name = f"mapping_{now.strftime('%Y-%m-%d')}"
+    date_str = now.strftime("%Y-%m-%d")
 
-    try:
-        ws = sh.worksheet(sheet_name)
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=sheet_name, rows="2000", cols="50")
-    return ws
+    # Look for existing token sheets for this date and find max counter
+    max_counter = 0
+    for ws in sh.worksheets():
+        title = ws.title
+        if title.startswith("token_") and title.endswith(date_str):
+            parts = title.split("_")
+            # Expected format: token_{counter}_{date_str with dashes}
+            # e.g. token_3_2025-12-08
+            if len(parts) >= 3 and parts[0] == "token":
+                try:
+                    c = int(parts[1])
+                    if c > max_counter:
+                        max_counter = c
+                except ValueError:
+                    continue
+
+    new_counter = max_counter + 1
+    sheet_name = f"token_{new_counter}_{date_str}"
+    ws = sh.add_worksheet(title=sheet_name, rows="2000", cols="50")
+    return ws, sheet_name
 
 
 # ---------------------- EXCEL / SPECIALTY MAPPING HELPERS ----------------------
@@ -274,6 +288,7 @@ def new_entry_tab():
                 st.warning("No non-empty rows to save.")
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
+                # Reset editor after submit
                 st.session_state["editor_key"] = f"editor_reset_{datetime.now().timestamp()}"
                 st.rerun()
         except Exception as e:
@@ -287,12 +302,14 @@ def mapping_editor_section(role: str):
     Homepage section: show & edit Specialty Mapping.xlsx as ONE table.
 
     Behavior:
-    - First 2 columns and first row *come from Excel*.
+    - First 2 columns and first row come from Excel (template).
     - Only cells with row >= 1 and col >= 2 are editable.
-    - Edits persist in the UI (widget state) until the user clicks Submit.
+    - Edits persist in the UI until user clicks Submit.
     - On Submit:
-        * Save full grid to mapping_YYYY-MM-DD (with row1 + first 2 cols restored from Excel).
-        * Reset the editor to a fresh template (clears editable cells only).
+        * Save full grid to a NEW sheet:
+              token_{counter}_{YYYY-MM-DD}
+          where counter increments per submit for that date.
+        * Reset the editor to a fresh template (clears editable cells).
     """
 
     st.subheader("Specialty Mapping – Scenario Grid")
@@ -313,7 +330,8 @@ def mapping_editor_section(role: str):
         """
         - **Row 1** and **first two columns** come from the Excel template.  
         - All other cells are editable and will stay as you type until you press **Submit Specialty Mapping**.  
-        - On submit, data is sent to Google Sheets (`mapping_YYYY-MM-DD`) and the editable cells are cleared.
+        - On submit, data is sent to Google Sheets in a new sheet named  
+          `token_{counter}_{YYYY-MM-DD}`, and the editable cells are then cleared.
         """
     )
 
@@ -329,14 +347,14 @@ def mapping_editor_section(role: str):
         unsafe_allow_html=True,
     )
 
-    # If we just submitted previously, clear the widget state
-    if st.session_state.get("mapping_clear_after_submit", False):
-        if "mapping_editor" in st.session_state:
-            del st.session_state["mapping_editor"]
-        st.session_state["mapping_clear_after_submit"] = False
-
     # Build the template (row1 + first 2 cols fixed, other cells blank)
     df_template = build_mapping_template(df_ref)
+
+    # Initialize editor key once; change only when we want to clear everything
+    if "mapping_editor_key" not in st.session_state:
+        st.session_state["mapping_editor_key"] = "mapping_editor_1"
+
+    mapping_key = st.session_state["mapping_editor_key"]
 
     # Column configuration:
     # - First 2 columns: disabled (non-editable).
@@ -351,23 +369,22 @@ def mapping_editor_section(role: str):
             column_config[col] = st.column_config.TextColumn()
 
     # Single unified data editor.
-    # IMPORTANT:
-    # - We pass df_template as the "initial" data.
-    # - Streamlit keeps user edits in the widget's internal state keyed by "mapping_editor".
-    # - We do NOT overwrite it from session_state each rerun, so data doesn't vanish.
+    # We pass df_template as initial data only; Streamlit keeps user edits in
+    # the widget's internal state keyed by `mapping_key`.
     edited = st.data_editor(
         df_template,
         num_rows="fixed",
         hide_index=False,
         use_container_width=False,  # allow horizontal scroll if table is wide
         column_config=column_config,
-        key="mapping_editor",
+        key=mapping_key,
     )
 
     # Submit button
     if st.button("Submit Specialty Mapping", type="primary"):
         try:
-            ws = get_mapping_sheet_for_today()
+            # Create a NEW token sheet for this submit
+            ws, sheet_name = create_new_token_mapping_sheet()
 
             full_df = edited.copy()
             full_df = full_df.fillna("").astype(str)
@@ -397,17 +414,16 @@ def mapping_editor_section(role: str):
                 clean_values.append(clean_row)
 
             # Write to Google Sheets (values first, then range_name)
-            ws.clear()
             ws.update(values=[header] + clean_values, range_name="A1")
 
             st.success(
                 "Specialty Mapping saved to Google Sheets "
-                f"(sheet: '{ws.title}')."
+                f"(sheet: '{sheet_name}')."
             )
 
-            # Reset editor on next run: clear widget state,
-            # then df_template will be used again (blank editable cells).
-            st.session_state["mapping_clear_after_submit"] = True
+            # ---- CLEAR DATA AFTER SUBMIT (and only after submit) ----
+            # Change the key so Streamlit creates a fresh widget with df_template.
+            st.session_state["mapping_editor_key"] = f"mapping_editor_{datetime.now().timestamp()}"
             st.rerun()
 
         except Exception as e:
