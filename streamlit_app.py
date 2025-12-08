@@ -23,8 +23,8 @@ COLUMNS = ["col1", "col2", "col3", "col4"]
 DEFAULT_ROWS = 10
 TIMEZONE = "Asia/Kolkata"
 
-# Excel file with the specialty mapping reference
-EXCEL_FILE = "Specialty Mapping.xlsx"   # must be present in the app repo root
+# Excel file with the specialty mapping reference (must be in repo root)
+EXCEL_FILE = "Specialty Mapping.xlsx"
 
 
 # ---------------------- GOOGLE SHEETS HELPERS ----------------------
@@ -60,14 +60,12 @@ def get_today_sheet():
 
 def append_rows(ws, df: pd.DataFrame) -> int:
     """Append non-empty rows from df to worksheet."""
-    # Treat everything as text when saving main data
     df_clean = df.dropna(how="all")
     if df_clean.empty:
         return 0
 
     df_clean = df_clean.fillna("").astype(str)
     rows = df_clean.values.tolist()
-
     for r in rows:
         ws.append_row(r, value_input_option="USER_ENTERED")
     return len(df_clean)
@@ -105,7 +103,6 @@ def get_mapping_sheet_for_today():
     try:
         ws = sh.worksheet(sheet_name)
     except gspread.WorksheetNotFound:
-        # 2000 rows, 50 columns (adjust if your grid is larger)
         ws = sh.add_worksheet(title=sheet_name, rows="2000", cols="50")
     return ws
 
@@ -119,11 +116,11 @@ def load_reference_sheet():
     Everything is treated as text; NaNs become empty strings.
     """
     try:
-        # Read as strings; header row is the first row in Excel
         df = pd.read_excel(EXCEL_FILE, dtype=str)
         if df is None or df.empty:
             return None
         df = df.fillna("")
+        df.reset_index(drop=True, inplace=True)
         return df
     except Exception as e:
         st.error(f"Failed to load Excel file '{EXCEL_FILE}': {e}")
@@ -233,8 +230,6 @@ def new_entry_tab():
 
     editor_key = st.session_state["editor_key"]
 
-    # Always start with blank df for a new key; for an existing key,
-    # Streamlit will keep the internal value as the user edits.
     df_default = blank_df()
 
     edited = st.data_editor(
@@ -252,7 +247,6 @@ def new_entry_tab():
         clear = st.button("Clear Table")
 
     if clear:
-        # Change the key so the widget is recreated with a fresh blank table
         st.session_state["editor_key"] = f"editor_reset_{datetime.now().timestamp()}"
         st.rerun()
 
@@ -264,7 +258,6 @@ def new_entry_tab():
                 st.warning("No non-empty rows to save.")
             else:
                 st.success(f"Saved {saved_rows} rows to today's sheet.")
-                # Change key to reset editor to blank
                 st.session_state["editor_key"] = f"editor_reset_{datetime.now().timestamp()}"
                 st.rerun()
         except Exception as e:
@@ -275,15 +268,15 @@ def new_entry_tab():
 
 def mapping_editor_section(role: str):
     """
-    Homepage section: show & edit Specialty Mapping.xlsx.
+    Homepage section: show & edit Specialty Mapping.xlsx as ONE table.
 
-    Requirements:
-    - First 2 columns from Excel (and the first row in that Excel file) are "frozen" and constant.
-    - Adjacent cells (beyond the first 2 columns) are editable.
+    Rules:
+    - First 2 columns are frozen & constant (non-editable).
+    - First row is frozen & constant (non-editable for all columns).
+    - All other cells are editable.
     - On submit:
-        * Entire grid (first 2 cols from Excel + edited cells) is saved
-          to mapping_YYYY-MM-DD in the same Google Sheet.
-        * The editable part on the website is reset back to the original template.
+        * Save full grid to mapping_YYYY-MM-DD.
+        * Reset table back to original Excel content.
     """
 
     st.subheader("Specialty Mapping – Scenario Grid")
@@ -293,89 +286,79 @@ def mapping_editor_section(role: str):
         st.info("Reference sheet not available or could not be loaded.")
         return
 
-    # Make sure everything is string, no NaNs
+    # Ensure all strings
     df_ref = df_ref.fillna("").astype(str)
+    num_rows, num_cols = df_ref.shape
 
-    # First 2 columns are the "frozen" reference
-    if df_ref.shape[1] < 3:
+    if num_cols < 3:
         st.error("Specialty Mapping.xlsx must have at least 3 columns.")
         return
 
-    frozen_part = df_ref.iloc[:, :2]         # first 2 columns
-    editable_part_default = df_ref.iloc[:, 2:]  # all remaining columns
-
-    editable_cols = list(editable_part_default.columns)
-
     st.markdown(
         """
-        - **Left side**: Fixed reference from Excel (first two columns; first row included).  
-        - **Right side**: Editable cells for each scenario/field (all other columns).  
-        - Click **Submit Specialty Mapping** to save the full grid for today's date
-          and reset the inputs.
+        - **Row 1** (top row) and **first two columns** are fixed from the Excel file.  
+        - Only the **other cells** are editable.  
+        - Click **Submit Specialty Mapping** to save today's mapping to Google Sheets 
+          (sheet name `mapping_YYYY-MM-DD`) and reset the grid.
         """
     )
 
-    # Keep editable data in session_state
-    if "mapping_edit_df" not in st.session_state:
-        st.session_state["mapping_edit_df"] = editable_part_default.copy()
+    # Initialize or reuse the editable DataFrame from session state
+    if "mapping_df" not in st.session_state:
+        st.session_state["mapping_df"] = df_ref.copy()
 
     if "mapping_editor_key" not in st.session_state:
         st.session_state["mapping_editor_key"] = "mapping_1"
 
-    current_edit_df = st.session_state["mapping_edit_df"]
-    # Ensure strict string type
-    current_edit_df = current_edit_df.fillna("").astype(str)
+    current_df = st.session_state["mapping_df"]
+    current_df = current_df.fillna("").astype(str)
 
-    col_left, col_right = st.columns([1, 2])
+    # Build column_config: first two columns disabled
+    column_config = {}
+    for i, col in enumerate(df_ref.columns):
+        if i < 2:
+            # First 2 columns frozen / non-editable
+            column_config[col] = st.column_config.TextColumn(disabled=True)
+        else:
+            column_config[col] = st.column_config.TextColumn()
 
-    with col_left:
-        st.markdown("**Reference (fixed)**")
-        st.dataframe(
-            frozen_part,
-            use_container_width=True,
-            hide_index=False,
-        )
+    # Single unified table
+    edited = st.data_editor(
+        current_df,
+        num_rows="fixed",
+        hide_index=False,
+        use_container_width=True,
+        column_config=column_config,
+        key=st.session_state["mapping_editor_key"],
+    )
 
-    with col_right:
-        st.markdown("**Fill / Edit mapping cells**")
+    # Normalize types
+    edited = edited.fillna("").astype(str)
 
-        column_config = {
-            col: st.column_config.TextColumn()
-            for col in editable_cols
-        }
+    # Enforce freeze for:
+    # - First row (row index 0) for ALL columns
+    edited.iloc[0, :] = df_ref.iloc[0, :]
 
-        edited = st.data_editor(
-            current_edit_df,
-            num_rows="fixed",           # same number of rows as reference
-            hide_index=False,
-            use_container_width=True,
-            column_config=column_config,
-            key=st.session_state["mapping_editor_key"],
-        )
+    # - First 2 columns (all rows)
+    edited.iloc[:, 0:2] = df_ref.iloc[:, 0:2]
 
-        # Always keep in text form
-        edited = edited.fillna("").astype(str)
-        st.session_state["mapping_edit_df"] = edited
+    # Save back to session_state so edits persist
+    st.session_state["mapping_df"] = edited
 
     # Submit button
     if st.button("Submit Specialty Mapping", type="primary"):
         try:
             ws = get_mapping_sheet_for_today()
 
-            # Reconstruct full DataFrame: first 2 cols from reference + edited scenario cols
-            full_df = pd.concat(
-                [frozen_part.reset_index(drop=True),
-                 edited.reset_index(drop=True)],
-                axis=1,
-            )
-
+            full_df = st.session_state["mapping_df"].copy()
             full_df = full_df.fillna("").astype(str)
 
-            # Prepare header and values as plain strings (no NaN)
-            header = ["" if (h is None or str(h) == "nan") else str(h) for h in full_df.columns]
+            header = [
+                "" if (h is None or str(h) == "nan") else str(h)
+                for h in full_df.columns
+            ]
             values = full_df.values.tolist()
 
-            # Ensure all inner cells are plain Python strings
             clean_values = []
             for row in values:
                 clean_row = []
@@ -397,10 +380,9 @@ def mapping_editor_section(role: str):
                 f"(sheet: '{ws.title}')."
             )
 
-            # Reset editable part back to the original template (i.e., Excel's content)
-            st.session_state["mapping_edit_df"] = editable_part_default.copy()
+            # Reset mapping to original Excel content
+            st.session_state["mapping_df"] = df_ref.copy()
             st.session_state["mapping_editor_key"] = f"mapping_{datetime.now().timestamp()}"
-
             st.rerun()
 
         except Exception as e:
