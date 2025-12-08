@@ -270,13 +270,13 @@ def mapping_editor_section(role: str):
     """
     Homepage section: show & edit Specialty Mapping.xlsx as ONE table.
 
-    Rules:
-    - First 2 columns are frozen & constant (non-editable).
-    - First row is frozen & constant (non-editable for all columns).
-    - All other cells are editable.
+    Behaviour:
+    - First 2 columns are visually disabled (non-editable).
+    - First row is logically frozen: any edits in row 0 are discarded on SAVE.
+    - All other cells are editable and do NOT vanish while typing.
     - On submit:
-        * Save full grid to mapping_YYYY-MM-DD.
-        * Reset table back to original Excel content.
+        * Save today's mapping to Google Sheets (mapping_YYYY-MM-DD).
+        * Reset the grid back to the original Excel contents.
     """
 
     st.subheader("Specialty Mapping – Scenario Grid")
@@ -286,7 +286,7 @@ def mapping_editor_section(role: str):
         st.info("Reference sheet not available or could not be loaded.")
         return
 
-    # Ensure all strings
+    # Treat everything as text
     df_ref = df_ref.fillna("").astype(str)
     num_rows, num_cols = df_ref.shape
 
@@ -296,56 +296,64 @@ def mapping_editor_section(role: str):
 
     st.markdown(
         """
-        - **Row 1** (top row) and **first two columns** are fixed from the Excel file.  
-        - Only the **other cells** are editable.  
-        - Click **Submit Specialty Mapping** to save today's mapping to Google Sheets 
-          (sheet name `mapping_YYYY-MM-DD`) and reset the grid.
+        - **First two columns** are fixed from the Excel file (non-editable here).  
+        - **First row** is logically frozen: any changes you make in row 1 will be **ignored on save**  
+          and restored from the original Excel.  
+        - All other cells are editable and changes are saved to a date-based sheet
+          named `mapping_YYYY-MM-DD`.
         """
     )
 
-    # Initialize or reuse the editable DataFrame from session state
+    # --- Make horizontal scrolling easier and allow last column to be wider ---
+    st.markdown(
+        """
+        <style>
+        /* Ensure the data editor can scroll horizontally */
+        div[data-testid="stDataFrameResizable"] {
+            overflow-x: auto;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Initialise persistent editable DF once
     if "mapping_df" not in st.session_state:
         st.session_state["mapping_df"] = df_ref.copy()
 
     if "mapping_editor_key" not in st.session_state:
         st.session_state["mapping_editor_key"] = "mapping_1"
 
-    current_df = st.session_state["mapping_df"]
+    current_df = st.session_state["mapping_df"].copy()
     current_df = current_df.fillna("").astype(str)
 
-    # Build column_config: first two columns disabled
+    # Column configuration: first 2 columns disabled, last column wide
     column_config = {}
     for i, col in enumerate(df_ref.columns):
         if i < 2:
-            # First 2 columns frozen / non-editable
+            # First 2 columns fixed / non-editable
             column_config[col] = st.column_config.TextColumn(disabled=True)
+        elif i == len(df_ref.columns) - 1:
+            # Last column (often "notes") wider for longer text
+            column_config[col] = st.column_config.TextColumn(width="large")
         else:
             column_config[col] = st.column_config.TextColumn()
 
-    # Single unified table
+    # Single unified editor; we do NOT override cells here, so typing is smooth
     edited = st.data_editor(
         current_df,
         num_rows="fixed",
         hide_index=False,
-        use_container_width=True,
+        use_container_width=False,  # enables horizontal scroll if table is wider than container
         column_config=column_config,
         key=st.session_state["mapping_editor_key"],
     )
 
-    # Normalize types
     edited = edited.fillna("").astype(str)
-
-    # Enforce freeze for:
-    # - First row (row index 0) for ALL columns
-    edited.iloc[0, :] = df_ref.iloc[0, :]
-
-    # - First 2 columns (all rows)
-    edited.iloc[:, 0:2] = df_ref.iloc[:, 0:2]
-
-    # Save back to session_state so edits persist
+    # Store exactly what the user has typed; no freezing enforced here
     st.session_state["mapping_df"] = edited
 
-    # Submit button
+    # --- Submit button ---
     if st.button("Submit Specialty Mapping", type="primary"):
         try:
             ws = get_mapping_sheet_for_today()
@@ -353,6 +361,14 @@ def mapping_editor_section(role: str):
             full_df = st.session_state["mapping_df"].copy()
             full_df = full_df.fillna("").astype(str)
 
+            # Enforce "frozen" parts ONLY at save time:
+            # 1) First row from original Excel
+            full_df.iloc[0, :] = df_ref.iloc[0, :]
+
+            # 2) First 2 columns for all rows from original Excel
+            full_df.iloc[:, 0:2] = df_ref.iloc[:, 0:2]
+
+            # Prepare header + values as pure strings
             header = [
                 "" if (h is None or str(h) == "nan") else str(h)
                 for h in full_df.columns
@@ -372,6 +388,7 @@ def mapping_editor_section(role: str):
                         clean_row.append(v_str)
                 clean_values.append(clean_row)
 
+            # Write to Google Sheets
             ws.clear()
             ws.update("A1", [header] + clean_values)
 
@@ -380,13 +397,14 @@ def mapping_editor_section(role: str):
                 f"(sheet: '{ws.title}')."
             )
 
-            # Reset mapping to original Excel content
+            # Reset editor back to original Excel content
             st.session_state["mapping_df"] = df_ref.copy()
             st.session_state["mapping_editor_key"] = f"mapping_{datetime.now().timestamp()}"
             st.rerun()
 
         except Exception as e:
             st.error(f"Error saving mapping to Google Sheets: {e}")
+
 
 
 # ---------------------- MAIN ----------------------
