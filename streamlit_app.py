@@ -2,30 +2,29 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from pathlib import Path
 
 import gspread
 from google.oauth2.service_account import Credentials
 
+
 # ---------------------- CONFIG ----------------------
 
 # Logins:
-# - doctor/password123 => New Entry only
-# - admin/doctor       => New Entry + Previous Entries + Mapping editor
+# - doctor / password123 => New Entry + Mapping
+# - admin  / doctor      => New Entry + Previous Entries + Mapping
 VALID_USERS = {
     "doctor": {"password": "password123", "role": "doctor"},
     "admin": {"password": "doctor", "role": "admin"},
 }
 
-# Change these to your real column names for NEW ENTRY table
+# Columns for the main data entry table
 COLUMNS = ["col1", "col2", "col3", "col4"]
 
 DEFAULT_ROWS = 10
 TIMEZONE = "Asia/Kolkata"
 
-# Excel reference file (must live next to this .py file in the repo)
-BASE_DIR = Path(__file__).parent
-EXCEL_FILE = BASE_DIR / "Specialty Mapping.xlsx"
+# Excel file with the specialty mapping reference
+EXCEL_FILE = "Specialty Mapping.xlsx"   # must be present in the app repo root
 
 
 # ---------------------- GOOGLE SHEETS HELPERS ----------------------
@@ -45,7 +44,7 @@ def get_spreadsheet():
 
 
 def get_today_sheet():
-    """Get or create today's worksheet named data_YYYY-MM-DD."""
+    """Get or create today's worksheet for main data: data_YYYY-MM-DD."""
     sh = get_spreadsheet()
     now = datetime.now(ZoneInfo(TIMEZONE))
     sheet_name = f"data_{now.strftime('%Y-%m-%d')}"
@@ -61,18 +60,21 @@ def get_today_sheet():
 
 def append_rows(ws, df: pd.DataFrame) -> int:
     """Append non-empty rows from df to worksheet."""
+    # Treat everything as text when saving main data
     df_clean = df.dropna(how="all")
     if df_clean.empty:
         return 0
 
+    df_clean = df_clean.fillna("").astype(str)
     rows = df_clean.values.tolist()
+
     for r in rows:
         ws.append_row(r, value_input_option="USER_ENTERED")
     return len(df_clean)
 
 
 def get_date_sheets():
-    """Return list of (date_str, worksheet) sorted by date descending."""
+    """Return list of (date_str, worksheet) sorted by date descending for main data."""
     sh = get_spreadsheet()
     worksheets = sh.worksheets()
 
@@ -90,113 +92,42 @@ def get_date_sheets():
     return [(date_str, ws) for (_, date_str, ws) in date_sheets]
 
 
-def get_mapping_sheet():
+def get_mapping_sheet_for_today():
     """
-    Get or create a dedicated worksheet to store the edited Specialty Mapping grid.
-    This is separate from the daily data_YYYY-MM-DD sheets.
+    Get or create today's worksheet for specialty mapping:
+    mapping_YYYY-MM-DD
+    All submissions on the same day go into this sheet.
     """
     sh = get_spreadsheet()
-    sheet_name = "specialty_mapping"
+    now = datetime.now(ZoneInfo(TIMEZONE))
+    sheet_name = f"mapping_{now.strftime('%Y-%m-%d')}"
+
     try:
         ws = sh.worksheet(sheet_name)
     except gspread.WorksheetNotFound:
-        # Create with some generous size; we'll overwrite contents on every save.
+        # 2000 rows, 50 columns (adjust if your grid is larger)
         ws = sh.add_worksheet(title=sheet_name, rows="2000", cols="50")
     return ws
 
 
-# ---------------------- SPECIALTY MAPPING (EXCEL) ----------------------
+# ---------------------- EXCEL / SPECIALTY MAPPING HELPERS ----------------------
 
 @st.cache_data
 def load_reference_sheet():
     """
     Load Specialty Mapping.xlsx and cache it.
-    This is the template: first 2 cols + first row are 'frozen'.
+    Everything is treated as text; NaNs become empty strings.
     """
     try:
-        df = pd.read_excel(EXCEL_FILE)
+        # Read as strings; header row is the first row in Excel
+        df = pd.read_excel(EXCEL_FILE, dtype=str)
         if df is None or df.empty:
             return None
+        df = df.fillna("")
         return df
     except Exception as e:
-        st.error(f"Failed to load Excel file '{EXCEL_FILE.name}': {e}")
+        st.error(f"Failed to load Excel file '{EXCEL_FILE}': {e}")
         return None
-
-
-def mapping_editor_section(role: str):
-    """
-    Homepage section: show & edit Specialty Mapping.xlsx.
-    - First 2 columns and first row are constant.
-    - Adjacent cells are editable.
-    - On submit, entire grid is written to Google Sheets (specialty_mapping sheet).
-    """
-    st.subheader("Specialty Mapping – Reference & Input")
-
-    df_ref = load_reference_sheet()
-    if df_ref is None:
-        st.info("Reference sheet not available or could not be loaded.")
-        return
-
-    # Define 'frozen' structure
-    frozen_cols = list(df_ref.columns[:2])  # first 2 columns
-    frozen_row_idx = df_ref.index[0]        # first row
-
-    st.markdown(
-        """
-        - **First two columns** and **first row** are fixed from the reference Excel.  
-        - You can fill or edit the **adjacent cells** (other columns / lower rows).  
-        - Click **Submit Specialty Mapping** to save the entire grid to Google Sheets.
-        """
-    )
-
-    # Initialize session state for editable mapping df
-    if "mapping_df" not in st.session_state:
-        # Start from the excel template
-        st.session_state["mapping_df"] = df_ref.copy()
-
-    current_df = st.session_state["mapping_df"]
-
-    # Column config: lock first two columns in the UI
-    column_config = {}
-    for c in current_df.columns:
-        if c in frozen_cols:
-            column_config[c] = st.column_config.Column(disabled=True)
-        else:
-            column_config[c] = st.column_config.Column()
-
-    edited = st.data_editor(
-        current_df,
-        num_rows="fixed",           # keep same structure as Excel
-        hide_index=True,
-        use_container_width=True,
-        column_config=column_config,
-        key="mapping_editor",
-    )
-
-    # Enforce frozen values: restore first two columns and first row
-    # from the original reference df so they truly stay constant.
-    edited.loc[:, frozen_cols] = df_ref.loc[:, frozen_cols]
-    edited.loc[frozen_row_idx, :] = df_ref.loc[frozen_row_idx, :]
-
-    # Update session state
-    st.session_state["mapping_df"] = edited
-
-    # Submit button (you might choose to restrict to admin only)
-    if st.button("Submit Specialty Mapping", type="primary"):
-        try:
-            ws = get_mapping_sheet()
-
-            # Clear existing contents
-            ws.clear()
-
-            # Prepare data: header row + all values
-            header = list(edited.columns)
-            values = edited.values.tolist()
-            ws.update("A1", [header] + values)
-
-            st.success("Specialty Mapping saved to Google Sheets (sheet: 'specialty_mapping').")
-        except Exception as e:
-            st.error(f"Error saving mapping to Google Sheets: {e}")
 
 
 # ---------------------- LOGIN ----------------------
@@ -340,6 +271,142 @@ def new_entry_tab():
             st.error(f"Error: {e}")
 
 
+# ---------------------- SPECIALTY MAPPING SECTION ----------------------
+
+def mapping_editor_section(role: str):
+    """
+    Homepage section: show & edit Specialty Mapping.xlsx.
+
+    Requirements:
+    - First 2 columns from Excel (and the first row in that Excel file) are "frozen" and constant.
+    - Adjacent cells (beyond the first 2 columns) are editable.
+    - On submit:
+        * Entire grid (first 2 cols from Excel + edited cells) is saved
+          to mapping_YYYY-MM-DD in the same Google Sheet.
+        * The editable part on the website is reset back to the original template.
+    """
+
+    st.subheader("Specialty Mapping – Scenario Grid")
+
+    df_ref = load_reference_sheet()
+    if df_ref is None:
+        st.info("Reference sheet not available or could not be loaded.")
+        return
+
+    # Make sure everything is string, no NaNs
+    df_ref = df_ref.fillna("").astype(str)
+
+    # First 2 columns are the "frozen" reference
+    if df_ref.shape[1] < 3:
+        st.error("Specialty Mapping.xlsx must have at least 3 columns.")
+        return
+
+    frozen_part = df_ref.iloc[:, :2]         # first 2 columns
+    editable_part_default = df_ref.iloc[:, 2:]  # all remaining columns
+
+    editable_cols = list(editable_part_default.columns)
+
+    st.markdown(
+        """
+        - **Left side**: Fixed reference from Excel (first two columns; first row included).  
+        - **Right side**: Editable cells for each scenario/field (all other columns).  
+        - Click **Submit Specialty Mapping** to save the full grid for today's date
+          and reset the inputs.
+        """
+    )
+
+    # Keep editable data in session_state
+    if "mapping_edit_df" not in st.session_state:
+        st.session_state["mapping_edit_df"] = editable_part_default.copy()
+
+    if "mapping_editor_key" not in st.session_state:
+        st.session_state["mapping_editor_key"] = "mapping_1"
+
+    current_edit_df = st.session_state["mapping_edit_df"]
+    # Ensure strict string type
+    current_edit_df = current_edit_df.fillna("").astype(str)
+
+    col_left, col_right = st.columns([1, 2])
+
+    with col_left:
+        st.markdown("**Reference (fixed)**")
+        st.dataframe(
+            frozen_part,
+            use_container_width=True,
+            hide_index=False,
+        )
+
+    with col_right:
+        st.markdown("**Fill / Edit mapping cells**")
+
+        column_config = {
+            col: st.column_config.TextColumn()
+            for col in editable_cols
+        }
+
+        edited = st.data_editor(
+            current_edit_df,
+            num_rows="fixed",           # same number of rows as reference
+            hide_index=False,
+            use_container_width=True,
+            column_config=column_config,
+            key=st.session_state["mapping_editor_key"],
+        )
+
+        # Always keep in text form
+        edited = edited.fillna("").astype(str)
+        st.session_state["mapping_edit_df"] = edited
+
+    # Submit button
+    if st.button("Submit Specialty Mapping", type="primary"):
+        try:
+            ws = get_mapping_sheet_for_today()
+
+            # Reconstruct full DataFrame: first 2 cols from reference + edited scenario cols
+            full_df = pd.concat(
+                [frozen_part.reset_index(drop=True),
+                 edited.reset_index(drop=True)],
+                axis=1,
+            )
+
+            full_df = full_df.fillna("").astype(str)
+
+            # Prepare header and values as plain strings (no NaN)
+            header = ["" if (h is None or str(h) == "nan") else str(h) for h in full_df.columns]
+            values = full_df.values.tolist()
+
+            # Ensure all inner cells are plain Python strings
+            clean_values = []
+            for row in values:
+                clean_row = []
+                for v in row:
+                    if v is None:
+                        clean_row.append("")
+                    else:
+                        v_str = str(v)
+                        if v_str == "nan":
+                            v_str = ""
+                        clean_row.append(v_str)
+                clean_values.append(clean_row)
+
+            ws.clear()
+            ws.update("A1", [header] + clean_values)
+
+            st.success(
+                "Specialty Mapping saved to Google Sheets "
+                f"(sheet: '{ws.title}')."
+            )
+
+            # Reset editable part back to the original template (i.e., Excel's content)
+            st.session_state["mapping_edit_df"] = editable_part_default.copy()
+            st.session_state["mapping_editor_key"] = f"mapping_{datetime.now().timestamp()}"
+
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Error saving mapping to Google Sheets: {e}")
+
+
 # ---------------------- MAIN ----------------------
 
 def main():
@@ -363,12 +430,12 @@ def main():
 
     st.title("Doctor Input Portal")
 
-    # ---- HOMEPAGE: Specialty Mapping editor (for both roles; you can restrict to admin if you want) ----
+    # --- Specialty Mapping section on homepage ---
     mapping_editor_section(role)
 
     st.markdown("---")
 
-    # ---- Tabs for daily data entry / history ----
+    # --- Main data entry / history tabs ---
     if role == "admin":
         tab1, tab2 = st.tabs(["New Entry", "Previous Entries"])
         with tab1:
