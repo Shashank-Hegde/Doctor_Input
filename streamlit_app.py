@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -108,8 +107,7 @@ def create_new_token_mapping_sheet():
         title = ws.title
         if title.startswith("token_") and title.endswith(date_str):
             parts = title.split("_")
-            # Expected format: token_{counter}_{date_str with dashes}
-            # e.g. token_3_2025-12-08
+            # Expected format: token_{counter}_{date_str}
             if len(parts) >= 3 and parts[0] == "token":
                 try:
                     c = int(parts[1])
@@ -122,6 +120,20 @@ def create_new_token_mapping_sheet():
     sheet_name = f"token_{new_counter}_{date_str}"
     ws = sh.add_worksheet(title=sheet_name, rows="2000", cols="50")
     return ws, sheet_name
+
+
+def get_token_sheets():
+    """
+    Return list of worksheets whose title starts with 'token_'.
+    Sorted lexicographically by title.
+    """
+    sh = get_spreadsheet()
+    sheets = []
+    for ws in sh.worksheets():
+        if ws.title.startswith("token_"):
+            sheets.append(ws)
+    sheets.sort(key=lambda w: w.title)
+    return sheets
 
 
 # ---------------------- EXCEL / SPECIALTY MAPPING HELPERS ----------------------
@@ -296,11 +308,11 @@ def new_entry_tab():
             st.error(f"Error: {e}")
 
 
-# ---------------------- SPECIALTY MAPPING SECTION ----------------------
+# ---------------------- SPECIALTY MAPPING – EDIT TAB ----------------------
 
 def mapping_editor_section(role: str):
     """
-    Homepage section: show & edit Specialty Mapping.xlsx as ONE table.
+    Edit view for Specialty Mapping.xlsx as ONE table.
 
     Behavior:
     - First 2 columns and first row come from Excel (template).
@@ -313,7 +325,7 @@ def mapping_editor_section(role: str):
         * Reset the editor to a fresh template (clears editable cells).
     """
 
-    st.subheader("Specialty Mapping – Scenario Grid")
+    st.subheader("Specialty Mapping – Scenario Grid (Edit)")
 
     df_ref = load_reference_sheet()
     if df_ref is None:
@@ -370,8 +382,6 @@ def mapping_editor_section(role: str):
             column_config[col] = st.column_config.TextColumn()
 
     # Single unified data editor.
-    # We pass df_template as initial data only; Streamlit keeps user edits in
-    # the widget's internal state keyed by `mapping_key`.
     edited = st.data_editor(
         df_template,
         num_rows="fixed",
@@ -381,7 +391,6 @@ def mapping_editor_section(role: str):
         key=mapping_key,
     )
 
-    # Submit button
     if st.button("Submit Specialty Mapping", type="primary"):
         try:
             # Create a NEW token sheet for this submit
@@ -422,13 +431,55 @@ def mapping_editor_section(role: str):
                 f"(sheet: '{sheet_name}')."
             )
 
-            # ---- CLEAR DATA AFTER SUBMIT (and only after submit) ----
-            # Change the key so Streamlit creates a fresh widget with df_template.
+            # CLEAR DATA AFTER SUBMIT (and only after submit)
             st.session_state["mapping_editor_key"] = f"mapping_editor_{datetime.now().timestamp()}"
             st.rerun()
 
         except Exception as e:
             st.error(f"Error saving mapping to Google Sheets: {e}")
+
+
+# ---------------------- SPECIALTY MAPPING – VIEW TAB ----------------------
+
+def mapping_view_section():
+    """
+    View-only tab for previously submitted specialty mappings
+    stored in sheets named token_{counter}_{YYYY-MM-DD}.
+
+    Shows the ENTIRE table for the selected sheet (read-only).
+    """
+
+    st.subheader("Specialty Mapping – View Submissions (Read Only)")
+
+    token_sheets = get_token_sheets()
+    if not token_sheets:
+        st.info("No mapping submissions found yet.")
+        return
+
+    sheet_titles = [ws.title for ws in token_sheets]
+    selected_title = st.selectbox("Select a submission sheet:", sheet_titles)
+
+    ws = next((w for w in token_sheets if w.title == selected_title), None)
+    if ws is None:
+        st.warning("Selected sheet could not be loaded.")
+        return
+
+    rows = ws.get_all_values()
+    if not rows:
+        st.write("Selected sheet is empty.")
+        return
+
+    header = rows[0]
+    data_rows = rows[1:]
+    if not data_rows:
+        st.write("No data rows in this sheet.")
+        return
+
+    df = pd.DataFrame(data_rows, columns=header)
+
+    st.markdown(f"Showing full table for **{selected_title}**:")
+    # Read-only view of the entire table, scrollable if wide
+    st.dataframe(df, use_container_width=True)
 
 
 # ---------------------- MAIN ----------------------
@@ -452,8 +503,14 @@ def main():
 
     st.title("Doctor Input Portal")
 
-    # --- Specialty Mapping section on homepage ---
-    mapping_editor_section(role)
+    # --- Specialty Mapping tabs (Edit + View) ---
+    tab_map_edit, tab_map_view = st.tabs(
+        ["Specialty Mapping (Edit)", "Specialty Mapping (View)"]
+    )
+    with tab_map_edit:
+        mapping_editor_section(role)
+    with tab_map_view:
+        mapping_view_section()
 
     st.markdown("---")
 
