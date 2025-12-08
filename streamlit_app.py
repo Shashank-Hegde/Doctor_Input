@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 import gspread
 from google.oauth2.service_account import Credentials
 
-
 # ---------------------- CONFIG ----------------------
 
 # Logins:
@@ -25,6 +24,9 @@ TIMEZONE = "Asia/Kolkata"
 
 # Excel file with the specialty mapping reference (must be in repo root)
 EXCEL_FILE = "Specialty Mapping.xlsx"
+
+# Set page config once at top-level
+st.set_page_config(page_title="Doctor Input Portal", layout="wide")
 
 
 # ---------------------- GOOGLE SHEETS HELPERS ----------------------
@@ -125,6 +127,20 @@ def load_reference_sheet():
     except Exception as e:
         st.error(f"Failed to load Excel file '{EXCEL_FILE}': {e}")
         return None
+
+
+def build_mapping_template(df_ref: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build the initial template used in the Streamlit editor:
+
+    - Row 0: same as Excel (frozen reference row).
+    - Col 0 and 1 (first two columns): same as Excel (frozen reference columns).
+    - All other cells (row >= 1, col >= 2) are blank, ready for user input.
+    """
+    template = df_ref.copy()
+    if template.shape[0] > 1 and template.shape[1] > 2:
+        template.iloc[1:, 2:] = ""
+    return template
 
 
 # ---------------------- LOGIN ----------------------
@@ -271,12 +287,12 @@ def mapping_editor_section(role: str):
     Homepage section: show & edit Specialty Mapping.xlsx as ONE table.
 
     Rules:
-    - First 2 columns are frozen & constant (non-editable).
-    - First row is frozen & constant (non-editable for all columns).
-    - All other cells are editable.
-    - On submit:
-        * Save full grid to mapping_YYYY-MM-DD.
-        * Reset table back to original Excel content.
+    - First 2 columns and first row come from Excel.
+    - Only cells with row >= 1 and col >= 2 are editable.
+    - Edits persist in session_state until the user clicks Submit.
+    - On Submit:
+        * Save full grid (with row1 & first 2 cols restored) to mapping_YYYY-MM-DD.
+        * Reset editable cells in Streamlit (clear them, keep row1 & first 2 cols).
     """
 
     st.subheader("Specialty Mapping – Scenario Grid")
@@ -286,7 +302,6 @@ def mapping_editor_section(role: str):
         st.info("Reference sheet not available or could not be loaded.")
         return
 
-    # Ensure all strings
     df_ref = df_ref.fillna("").astype(str)
     num_rows, num_cols = df_ref.shape
 
@@ -296,16 +311,31 @@ def mapping_editor_section(role: str):
 
     st.markdown(
         """
-        - **Row 1** (top row) and **first two columns** are fixed from the Excel file.  
-        - Only the **other cells** are editable.  
-        - Click **Submit Specialty Mapping** to save today's mapping to Google Sheets 
-          (sheet name `mapping_YYYY-MM-DD`) and reset the grid.
+        - **Row 1** and **first two columns** come from the Excel template.  
+        - All other cells are editable and will stay as you type until you press **Submit Specialty Mapping**.  
+        - On submit, data is sent to Google Sheets (`mapping_YYYY-MM-DD`) and the editable cells are cleared.
         """
     )
 
-    # Initialize or reuse the editable DataFrame from session state
+    # CSS to enable horizontal scrolling and not clip wide columns
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stDataFrameResizable"] {
+            overflow-x: auto;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Build template once from Excel and keep it in session_state
+    if "mapping_template_df" not in st.session_state:
+        st.session_state["mapping_template_df"] = build_mapping_template(df_ref)
+
+    # Initialise or reuse the editable DataFrame from session_state
     if "mapping_df" not in st.session_state:
-        st.session_state["mapping_df"] = df_ref.copy()
+        st.session_state["mapping_df"] = st.session_state["mapping_template_df"].copy()
 
     if "mapping_editor_key" not in st.session_state:
         st.session_state["mapping_editor_key"] = "mapping_1"
@@ -313,36 +343,33 @@ def mapping_editor_section(role: str):
     current_df = st.session_state["mapping_df"]
     current_df = current_df.fillna("").astype(str)
 
-    # Build column_config: first two columns disabled
+    # Column configuration:
+    # - First 2 columns: disabled (frozen).
+    # - Last column: wider for long notes.
     column_config = {}
     for i, col in enumerate(df_ref.columns):
         if i < 2:
-            # First 2 columns frozen / non-editable
             column_config[col] = st.column_config.TextColumn(disabled=True)
+        elif i == num_cols - 1:
+            column_config[col] = st.column_config.TextColumn(width="large")
         else:
             column_config[col] = st.column_config.TextColumn()
 
-    # Single unified table
+    # Single unified data editor.
+    # IMPORTANT: we do NOT overwrite cells here based on df_ref,
+    # so values do not vanish while typing.
     edited = st.data_editor(
         current_df,
         num_rows="fixed",
         hide_index=False,
-        use_container_width=True,
+        use_container_width=False,  # allows horizontal scroll if table is wider than container
         column_config=column_config,
         key=st.session_state["mapping_editor_key"],
     )
 
-    # Normalize types
     edited = edited.fillna("").astype(str)
 
-    # Enforce freeze for:
-    # - First row (row index 0) for ALL columns
-    edited.iloc[0, :] = df_ref.iloc[0, :]
-
-    # - First 2 columns (all rows)
-    edited.iloc[:, 0:2] = df_ref.iloc[:, 0:2]
-
-    # Save back to session_state so edits persist
+    # Persist what the user has typed; we only enforce "frozen" behavior on SUBMIT.
     st.session_state["mapping_df"] = edited
 
     # Submit button
@@ -350,13 +377,19 @@ def mapping_editor_section(role: str):
         try:
             ws = get_mapping_sheet_for_today()
 
+            # Take what the user has typed
             full_df = st.session_state["mapping_df"].copy()
             full_df = full_df.fillna("").astype(str)
 
-            header = [
-                "" if (h is None or str(h) == "nan") else str(h)
-                for h in full_df.columns
-            ]
+            # Enforce "frozen" reference parts on SAVE:
+            # 1) First row from Excel
+            full_df.iloc[0, :] = df_ref.iloc[0, :]
+
+            # 2) First 2 columns from Excel
+            full_df.iloc[:, 0:2] = df_ref.iloc[:, 0:2]
+
+            # Prepare header + values as strings
+            header = ["" if (h is None or str(h) == "nan") else str(h) for h in full_df.columns]
             values = full_df.values.tolist()
 
             clean_values = []
@@ -372,16 +405,17 @@ def mapping_editor_section(role: str):
                         clean_row.append(v_str)
                 clean_values.append(clean_row)
 
+            # Write to Google Sheets (values first, then range_name to avoid warnings)
             ws.clear()
-            ws.update("A1", [header] + clean_values)
+            ws.update(values=[header] + clean_values, range_name="A1")
 
             st.success(
                 "Specialty Mapping saved to Google Sheets "
                 f"(sheet: '{ws.title}')."
             )
 
-            # Reset mapping to original Excel content
-            st.session_state["mapping_df"] = df_ref.copy()
+            # Reset mapping to a fresh template: keep row1 & first 2 columns, clear editable cells.
+            st.session_state["mapping_df"] = st.session_state["mapping_template_df"].copy()
             st.session_state["mapping_editor_key"] = f"mapping_{datetime.now().timestamp()}"
             st.rerun()
 
@@ -392,8 +426,6 @@ def mapping_editor_section(role: str):
 # ---------------------- MAIN ----------------------
 
 def main():
-    st.set_page_config(page_title="Doctor Input Portal", layout="wide")
-
     if "logged_in" not in st.session_state:
         st.session_state["logged_in"] = False
         st.session_state["user_role"] = None
