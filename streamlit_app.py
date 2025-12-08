@@ -133,8 +133,8 @@ def build_mapping_template(df_ref: pd.DataFrame) -> pd.DataFrame:
     """
     Build the initial template used in the Streamlit editor:
 
-    - Row 0: same as Excel (frozen reference row).
-    - Col 0 and 1 (first two columns): same as Excel (frozen reference columns).
+    - Row 0: same as Excel (template row).
+    - Col 0 and 1 (first two columns): same as Excel.
     - All other cells (row >= 1, col >= 2) are blank, ready for user input.
     """
     template = df_ref.copy()
@@ -286,13 +286,13 @@ def mapping_editor_section(role: str):
     """
     Homepage section: show & edit Specialty Mapping.xlsx as ONE table.
 
-    Rules:
-    - First 2 columns and first row come from Excel.
+    Behavior:
+    - First 2 columns and first row *come from Excel*.
     - Only cells with row >= 1 and col >= 2 are editable.
-    - Edits persist in session_state until the user clicks Submit.
+    - Edits persist in the UI (widget state) until the user clicks Submit.
     - On Submit:
-        * Save full grid (with row1 & first 2 cols restored) to mapping_YYYY-MM-DD.
-        * Reset editable cells in Streamlit (clear them, keep row1 & first 2 cols).
+        * Save full grid to mapping_YYYY-MM-DD (with row1 + first 2 cols restored from Excel).
+        * Reset the editor to a fresh template (clears editable cells only).
     """
 
     st.subheader("Specialty Mapping – Scenario Grid")
@@ -329,23 +329,18 @@ def mapping_editor_section(role: str):
         unsafe_allow_html=True,
     )
 
-    # Build template once from Excel and keep it in session_state
-    if "mapping_template_df" not in st.session_state:
-        st.session_state["mapping_template_df"] = build_mapping_template(df_ref)
+    # If we just submitted previously, clear the widget state
+    if st.session_state.get("mapping_clear_after_submit", False):
+        if "mapping_editor" in st.session_state:
+            del st.session_state["mapping_editor"]
+        st.session_state["mapping_clear_after_submit"] = False
 
-    # Initialise or reuse the editable DataFrame from session_state
-    if "mapping_df" not in st.session_state:
-        st.session_state["mapping_df"] = st.session_state["mapping_template_df"].copy()
-
-    if "mapping_editor_key" not in st.session_state:
-        st.session_state["mapping_editor_key"] = "mapping_1"
-
-    current_df = st.session_state["mapping_df"]
-    current_df = current_df.fillna("").astype(str)
+    # Build the template (row1 + first 2 cols fixed, other cells blank)
+    df_template = build_mapping_template(df_ref)
 
     # Column configuration:
-    # - First 2 columns: disabled (frozen).
-    # - Last column: wider for long notes.
+    # - First 2 columns: disabled (non-editable).
+    # - Last column: wide for notes.
     column_config = {}
     for i, col in enumerate(df_ref.columns):
         if i < 2:
@@ -356,32 +351,28 @@ def mapping_editor_section(role: str):
             column_config[col] = st.column_config.TextColumn()
 
     # Single unified data editor.
-    # IMPORTANT: we do NOT overwrite cells here based on df_ref,
-    # so values do not vanish while typing.
+    # IMPORTANT:
+    # - We pass df_template as the "initial" data.
+    # - Streamlit keeps user edits in the widget's internal state keyed by "mapping_editor".
+    # - We do NOT overwrite it from session_state each rerun, so data doesn't vanish.
     edited = st.data_editor(
-        current_df,
+        df_template,
         num_rows="fixed",
         hide_index=False,
-        use_container_width=False,  # allows horizontal scroll if table is wider than container
+        use_container_width=False,  # allow horizontal scroll if table is wide
         column_config=column_config,
-        key=st.session_state["mapping_editor_key"],
+        key="mapping_editor",
     )
-
-    edited = edited.fillna("").astype(str)
-
-    # Persist what the user has typed; we only enforce "frozen" behavior on SUBMIT.
-    st.session_state["mapping_df"] = edited
 
     # Submit button
     if st.button("Submit Specialty Mapping", type="primary"):
         try:
             ws = get_mapping_sheet_for_today()
 
-            # Take what the user has typed
-            full_df = st.session_state["mapping_df"].copy()
+            full_df = edited.copy()
             full_df = full_df.fillna("").astype(str)
 
-            # Enforce "frozen" reference parts on SAVE:
+            # Enforce template parts on SAVE:
             # 1) First row from Excel
             full_df.iloc[0, :] = df_ref.iloc[0, :]
 
@@ -405,7 +396,7 @@ def mapping_editor_section(role: str):
                         clean_row.append(v_str)
                 clean_values.append(clean_row)
 
-            # Write to Google Sheets (values first, then range_name to avoid warnings)
+            # Write to Google Sheets (values first, then range_name)
             ws.clear()
             ws.update(values=[header] + clean_values, range_name="A1")
 
@@ -414,9 +405,9 @@ def mapping_editor_section(role: str):
                 f"(sheet: '{ws.title}')."
             )
 
-            # Reset mapping to a fresh template: keep row1 & first 2 columns, clear editable cells.
-            st.session_state["mapping_df"] = st.session_state["mapping_template_df"].copy()
-            st.session_state["mapping_editor_key"] = f"mapping_{datetime.now().timestamp()}"
+            # Reset editor on next run: clear widget state,
+            # then df_template will be used again (blank editable cells).
+            st.session_state["mapping_clear_after_submit"] = True
             st.rerun()
 
         except Exception as e:
